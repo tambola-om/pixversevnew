@@ -1,0 +1,1800 @@
+#!/usr/bin/env python3
+"""Mini proxy CORS multi-fournisseurs (Ollama cloud, NVIDIA NIM, Z.ai).
+Usage : python proxy_ollama.py        (port 8788 par défaut)
+        python proxy_ollama.py --insecure   (désactive la vérification SSL : dépannage seulement)
+        pip install truststore              (recommandé : utilise les certificats de Windows)
+        python proxy_ollama.py 9000   (autre port)
+
+Routes (le préfixe choisit le fournisseur, le reste du chemin est transmis tel quel) :
+  http://localhost:8788/v1/...         -> https://ollama.com/v1/...                 (ancienne route Ollama)
+  http://localhost:8788/ollama/v1/...  -> https://ollama.com/v1/...
+  http://localhost:8788/nvidia/v1/...  -> https://integrate.api.nvidia.com/v1/...
+  http://localhost:8788/zai/api/paas/v4/... -> https://api.z.ai/api/paas/v4/...
+"""
+import sys, urllib.request, urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import ssl
+
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+INSECURE = "--insecure" in sys.argv
+PORT = int(ARGS[0]) if ARGS else 8788
+
+
+def make_ssl_context():
+    """Contexte SSL : --insecure (sans vérification), sinon magasin de certificats
+    du système (pip install truststore), sinon certifi, sinon Python par défaut."""
+    if INSECURE:
+        return ssl._create_unverified_context(), "SANS vérification des certificats (--insecure)"
+    try:
+        import truststore
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), "certificats du système (truststore)"
+    except Exception:
+        pass
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where()), "certificats certifi"
+    except Exception:
+        pass
+    return ssl.create_default_context(), "certificats Python par défaut"
+
+
+SSL_CTX, SSL_MODE = make_ssl_context()
+
+ROUTES = {
+    "ollama": "https://ollama.com",
+    "nvidia": "https://integrate.api.nvidia.com",
+    "zai": "https://api.z.ai",
+}
+LEGACY_TARGET = ROUTES["ollama"]  # /v1/... sans préfixe -> Ollama
+
+
+def resolve(path):
+    """Retourne l'URL cible complète pour un chemin reçu, ou None."""
+    parts = path.split("/", 2)  # ['', 'nvidia', 'v1/chat/completions']
+    if len(parts) >= 2 and parts[1] in ROUTES:
+        rest = "/" + parts[2] if len(parts) > 2 else "/"
+        return ROUTES[parts[1]] + rest
+    if path.startswith("/v1"):
+        return LEGACY_TARGET + path
+    return None
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+    def _reply(self, status, data, ctype="application/json"):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def _forward(self, method):
+        url = resolve(self.path)
+        if not url:
+            self._reply(404, b'{"error":"route inconnue : utilisez /ollama, /nvidia ou /zai"}')
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        headers = {
+            "Content-Type": self.headers.get("Content-Type", "application/json"),
+            "Accept": "application/json",
+            "User-Agent": "realisateur-ia-proxy/1.0",
+        }
+        if self.headers.get("Authorization"):
+            headers["Authorization"] = self.headers["Authorization"]
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=300, context=SSL_CTX) as r:
+                status, data, ctype = r.status, r.read(), r.headers.get("Content-Type", "application/json")
+        except urllib.error.HTTPError as e:
+            status, data, ctype = e.code, e.read(), e.headers.get("Content-Type", "application/json")
+        except Exception as e:
+            reason = getattr(e, "reason", e)
+            msg = "Proxy : impossible de joindre %s (%s / %s : %r)" % (url, type(e).__name__, type(reason).__name__, reason)
+            status, data, ctype = 502, ('{"error":{"message":%s}}' % __import__("json").dumps(msg)).encode(), "application/json"
+        sys.stdout.write("%s %s -> %s\n" % (method, url, status))
+        if status >= 400:
+            sys.stdout.write("   DETAIL : %s\n" % data[:400].decode("utf-8", "replace").replace("\n", " "))
+        sys.stdout.flush()
+        self._reply(status, data, ctype)
+
+    def do_GET(self):
+        if self.path in ("/", "/health"):
+            self._reply(200, ("Proxy CORS OK (v3). SSL : " + SSL_MODE + ". Routes : " + ", ".join("/" + k for k in ROUTES)).encode(), "text/plain; charset=utf-8")
+            return
+        self._forward("GET")
+    def do_POST(self): self._forward("POST")
+
+
+print("Proxy CORS actif sur http://localhost:%d" % PORT)
+print("  SSL : " + SSL_MODE)
+for name, target in ROUTES.items():
+    print("  /%s/...  ->  %s" % (name, target))
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎬 Réalisateur IA – PixVerse V6 (ZRO)</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: #0a0f1e;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            color: #e2e8f0;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            background: #141b2b;
+            padding: 25px;
+            border-radius: 20px;
+            border: 1px solid #2a3a5a;
+        }
+        h1 {
+            font-size: 2rem;
+            border-left: 6px solid #facc15;
+            padding-left: 16px;
+            margin-bottom: 6px;
+            color: white;
+        }
+        h1 small {
+            font-size: 0.8rem;
+            color: #facc15;
+            font-weight: 400;
+            display: block;
+            margin-top: 4px;
+        }
+        .banner {
+            background: #1a253a;
+            border: 1px solid #2a3a5a;
+            border-radius: 12px;
+            padding: 12px 18px;
+            margin: 14px 0 18px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 20px;
+            align-items: center;
+            color: #94a3b8;
+            font-size: 0.85rem;
+        }
+        .banner .tag {
+            background: #facc15;
+            color: #0a0f1e;
+            font-weight: 700;
+            padding: 3px 14px;
+            border-radius: 30px;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+        .banner strong { color: white; }
+        .api-row {
+            background: #1a253a;
+            padding: 10px 16px;
+            border-radius: 10px;
+            border-left: 5px solid #facc15;
+            margin-bottom: 16px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+        .api-row input {
+            flex: 1;
+            min-width: 180px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #2a3a5a;
+            background: #0f172a;
+            color: white;
+            font-size: 0.9rem;
+        }
+        .api-row input:focus { outline: 2px solid #facc15; border-color: transparent; }
+        .api-row select {
+            min-width: 180px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #2a3a5a;
+            background: #0f172a;
+            color: white;
+            font-size: 0.9rem;
+        }
+        .api-row select:focus { outline: 2px solid #facc15; border-color: transparent; }
+        .api-row .badge {
+            background: #facc15;
+            color: #0a0f1e;
+            padding: 2px 14px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 700;
+        }
+        .upload-area {
+            background: #1a253a;
+            border: 2px dashed #2a3a5a;
+            border-radius: 14px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 16px;
+            transition: 0.3s;
+            cursor: pointer;
+        }
+        .upload-area:hover { border-color: #facc15; background: #1f2d45; }
+        .upload-area img { max-width: 180px; max-height: 180px; border-radius: 10px; margin-top: 8px; }
+        .upload-area input[type="file"] { display: none; }
+        .example-selector {
+            background: #1a253a;
+            padding: 12px 16px;
+            border-radius: 10px;
+            border-left: 5px solid #8b5cf6;
+            margin: 14px 0;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+        .example-selector select {
+            flex: 2;
+            min-width: 180px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #2a3a5a;
+            background: #0f172a;
+            color: white;
+            font-size: 0.9rem;
+        }
+        .example-selector select:focus { outline: 2px solid #8b5cf6; border-color: transparent; }
+        .example-selector .preview {
+            flex: 1;
+            min-width: 120px;
+            font-size: 0.8rem;
+            color: #94a3b8;
+            font-style: italic;
+            padding: 4px 12px;
+            background: #0f172a;
+            border-radius: 8px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            background: #1a253a;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            display: block;
+            margin-bottom: 2px;
+        }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 7px 10px;
+            border-radius: 8px;
+            border: 1px solid #2a3a5a;
+            background: #0f172a;
+            color: white;
+            font-size: 0.85rem;
+        }
+        .form-group textarea { min-height: 40px; resize: vertical; font-family: inherit; }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+            outline: 2px solid #facc15;
+            border-color: transparent;
+        }
+        .btn-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+        .btn {
+            padding: 8px 20px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            border: none;
+            cursor: pointer;
+            transition: 0.2s;
+            white-space: nowrap;
+        }
+        .btn-primary { background: #facc15; color: #0a0f1e; }
+        .btn-primary:hover { background: #eab308; transform: translateY(-2px); }
+        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: #2a3a5a; color: white; }
+        .btn-secondary:hover { background: #3a4a6a; }
+        .btn-success { background: #22c55e; color: #0a0f1e; }
+        .btn-success:hover { background: #16a34a; }
+        .btn-warning { background: #f59e0b; color: #0a0f1e; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-outline { background: transparent; color: #facc15; border: 2px solid #facc15; }
+        .btn-outline:hover { background: #facc15; color: #0a0f1e; }
+        .btn-sm { padding: 5px 14px; font-size: 0.75rem; }
+        .status { padding: 10px 14px; border-radius: 10px; margin: 10px 0; }
+        .status.loading { background: #1a253a; color: #facc15; border-left: 4px solid #facc15; }
+        .status.error { background: #3a1a1a; color: #f87171; border-left: 4px solid #ef4444; }
+        .status.success { background: #1a3a1a; color: #86efac; border-left: 4px solid #22c55e; }
+        .result-box {
+            background: #0f172a;
+            border: 1px solid #2a3a5a;
+            border-radius: 12px;
+            padding: 14px 18px;
+            margin: 12px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            color: #e2e8f0;
+            border-left: 6px solid #facc15;
+            min-height: 100px;
+        }
+        .result-box[contenteditable="true"]:focus {
+            outline: 2px solid #facc15;
+            border-color: transparent;
+        }
+        .segment-container { margin-top: 24px; border-top: 2px solid #1a253a; padding-top: 16px; }
+        .segment-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: white;
+            margin: 12px 0 6px;
+        }
+        .storyboard-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.75rem;
+            margin: 10px 0;
+        }
+        .storyboard-table th {
+            background: #1a253a;
+            color: #facc15;
+            padding: 8px 6px;
+            text-align: left;
+            font-weight: 600;
+        }
+        .storyboard-table td, .storyboard-table th {
+            border: 1px solid #2a3a5a;
+            padding: 6px;
+            vertical-align: top;
+        }
+        .storyboard-table tr:nth-child(even) { background: #111a2a; }
+        .scene-id { color: #facc15; font-weight: 700; }
+        .dialogue-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            align-items: stretch;
+            min-width: 200px;
+        }
+        .dialogue-input {
+            width: 100%;
+            padding: 6px 8px;
+            border-radius: 6px;
+            border: 1px solid #2a3a5a;
+            background: #0f172a;
+            color: #e2e8f0;
+            font-size: 0.8rem;
+            font-family: 'Segoe UI', sans-serif;
+            resize: vertical;
+            min-height: 60px;
+            line-height: 1.4;
+        }
+        .dialogue-input:focus {
+            outline: 2px solid #facc15;
+            border-color: transparent;
+        }
+        .dialogue-cell .btn-sm {
+            align-self: flex-end;
+            margin-top: 2px;
+        }
+        .meta-section {
+            background: #1a253a;
+            padding: 12px 16px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 5px solid #8b5cf6;
+        }
+        .meta-section h3 {
+            color: #94a3b8;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 4px 0 2px;
+        }
+        .meta-section p { color: #e2e8f0; margin: 2px 0 6px; font-size: 0.9rem; }
+        .voice-lines { display: flex; flex-wrap: wrap; gap: 5px; }
+        .voice-lines span {
+            background: #0f172a;
+            padding: 3px 12px;
+            border-radius: 30px;
+            border: 1px dashed #2a3a5a;
+            color: #facc15;
+            font-style: italic;
+            font-size: 0.8rem;
+        }
+        .continuity-box {
+            background: #1a253a;
+            padding: 10px 14px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 5px solid #8b5cf6;
+            color: #e2e8f0;
+            font-size: 0.85rem;
+        }
+        .credit-badge {
+            display: inline-block;
+            background: #1a253a;
+            color: #facc15;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            border: 1px solid #2a3a5a;
+        }
+        .credit-badge.gold { background: #facc15; color: #0a0f1e; border-color: #facc15; }
+        .flex { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .memory-box {
+            background: #1a253a;
+            border-left: 5px solid #facc15;
+            padding: 10px 14px;
+            border-radius: 10px;
+            margin: 10px 0;
+            font-size: 0.8rem;
+            color: #94a3b8;
+        }
+        .memory-box strong { color: #facc15; }
+        .prompt-tips {
+            background: #1a253a;
+            padding: 12px 16px;
+            border-radius: 10px;
+            border-left: 5px solid #22c55e;
+            margin: 10px 0;
+            font-size: 0.8rem;
+        }
+        .prompt-tips ul { margin: 4px 0 0 18px; color: #94a3b8; }
+        .prompt-tips ul li { margin-bottom: 2px; }
+        .prompt-tips strong { color: #facc15; }
+        .reco-box {
+            background: #1a253a;
+            border-left: 5px solid #8b5cf6;
+            padding: 8px 12px;
+            border-radius: 10px;
+            margin: 6px 0;
+            color: #e2e8f0;
+            font-size: 0.85rem;
+        }
+        .provider-row {
+            background: #1a253a;
+            padding: 10px 16px;
+            border-radius: 10px;
+            border-left: 5px solid #22c55e;
+            margin-bottom: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+        .provider-row select {
+            min-width: 200px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid #2a3a5a;
+            background: #0f172a;
+            color: white;
+            font-size: 0.9rem;
+        }
+        .provider-row select:focus { outline: 2px solid #22c55e; border-color: transparent; }
+        .provider-row .hint {
+            font-size: 0.7rem;
+            color: #64748b;
+            width: 100%;
+        }
+        @media (max-width: 600px) {
+            .container { padding: 14px; }
+            h1 { font-size: 1.3rem; }
+            .form-grid { grid-template-columns: 1fr; }
+            .storyboard-table { font-size: 0.65rem; }
+            .storyboard-table td, .storyboard-table th { padding: 4px; }
+            .dialogue-input { min-height: 40px; font-size: 0.7rem; }
+            .dialogue-cell { min-width: 120px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>
+        🎬 RÉALISATEUR IA
+        <small>Spielberg · Cameron · Nolan · Deakins · Williams · Kahn · ZRO</small>
+    </h1>
+
+    <div class="banner">
+        <span class="tag">🎬 UNIVERSEL</span>
+        <span><strong>Règles 69 · 70 · 71 · 72 · 73 · 75 · 77</strong></span>
+        <span>🔒 <strong>Règle 77</strong> : INTERDICTION DES GROS PLANS</span>
+        <span>🔒 <strong>Dialogues en FRANÇAIS</strong></span>
+        <span>🔒 <strong>Guillemets " " dans le prompt</strong></span>
+    </div>
+
+    <!-- Fournisseur -->
+    <div class="provider-row">
+        🏢 <strong>Fournisseur :</strong>
+        <select id="providerSelect">
+            <option value="zro" selected>ZRO (moonmath)</option>
+            <option value="ollama">Ollama (cloud)</option>
+            <option value="ollama_local">Ollama (local)</option>
+            <option value="ollama_proxy">Ollama (proxy)</option>
+            <option value="agnes">Agnes AI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="google">Google AI Studio</option>
+            <option value="zai">Z.ai (proxy)</option>
+            <option value="nvidia">NVIDIA NIM (proxy)</option>
+        </select>
+        <span class="badge" id="providerBadge" style="background:#22c55e;color:#0a0f1e;padding:2px 14px;border-radius:20px;font-size:0.7rem;font-weight:700;">ZRO</span>
+        <span class="hint" id="providerHint">URL : https://zro.moonmath.ai/v1 — Modèle gratuit : glm-5.3-flash</span>
+    </div>
+
+    <div class="api-row">
+        🔑 <strong>Clé API :</strong>
+        <input type="password" id="apiKey" placeholder="Collez votre clé API" value="sk-roxZr15alwrhMEBT3UzVOg">
+        <span style="font-size:0.75rem; color:#64748b;">(stockée localement)</span>
+        <select id="modelSelect">
+            <option value="glm-5.3-flash" selected>GLM 5.3 Flash</option>
+            <option value="glm-5.3">GLM 5.3</option>
+            <option value="deepseek-4.1-flash">DeepSeek 4.1 Flash</option>
+        </select>
+        <button class="btn btn-outline btn-sm" id="listModelsBtn" type="button">🔄 Lister les modèles</button>
+    </div>
+
+    <div class="upload-area" id="uploadArea">
+        <label for="imageUpload" style="cursor:pointer;display:block;">
+            <div style="font-size:1.8rem;">📤</div>
+            <div style="font-weight:600; color:white;">Cliquez pour uploader une image de référence (optionnel)</div>
+            <div style="font-size:0.75rem; color:#94a3b8;">PNG, JPG, WEBP — L'IA analysera cette image</div>
+        </label>
+        <input type="file" id="imageUpload" accept="image/*">
+        <div id="imagePreview" style="margin-top:6px;"></div>
+        <div id="imageAnalysisResult" style="margin-top: 6px; font-size: 0.85rem; color: rgb(134, 239, 172); display: none;">✅ Image analysée et mémorisée !</div>
+    </div>
+
+    <div id="memoryDisplay" class="memory-box" style="display: none;">
+        <strong>🧠 Mémoire visuelle :</strong><br>
+        <span id="memoryText"></span>
+    </div>
+
+    <div class="example-selector">
+        <label for="exampleSelect" style="color:#94a3b8;font-weight:600;font-size:0.8rem;">📋 Idée :</label>
+        <select id="exampleSelect">
+            <option value="">-- Choisissez une idée --</option>
+            <option value="pilote">🚀 Un pilote dans un cockpit futuriste, lumières bleues, concentration.</option>
+            <option value="detective">🕵️ Un détective dans une ruelle nocturne, pluie, néons rouges, marche lente, tension.</option>
+            <option value="guerriere">⚔️ Une guerrière dans un désert brûlant, vent fort, manteau qui flotte, détermination.</option>
+            <option value="astronaute">🚀 Un astronaute sur une lune violette, silence, marche lente, mystère.</option>
+            <option value="cowboy">🤠 Un cowboy dans une ville fantôme, poussière, regard fixe, suspense.</option>
+            <option value="elfe">🧝 Une elfe dans une forêt ancienne, lumière dorée, marche lente, magie.</option>
+            <option value="phare">🌊 Un gardien de phare reçoit un signal radio inattendu, nuit, vent, tension.</option>
+            <option value="chat_chien">🐱 Un chat errant rencontre un chien dans une ruelle, ils se méfient puis s'approchent.</option>
+        </select>
+        <button class="btn btn-outline btn-sm" id="loadExampleBtn">📥 Charger</button>
+        <div class="preview" id="examplePreview">Aperçu de l'idée...</div>
+    </div>
+
+    <div class="prompt-tips">
+        <strong>🎬 RÈGLES ACTIVES :</strong>
+        <ul>
+            <li><strong>Règle 69</strong> — Image‑to‑Video : NE PAS décrire le personnage si une image est fournie (sauf vêtements).</li>
+            <li><strong>Règle 70</strong> — Tir et détonation : isoler le tir dans une phrase séparée.</li>
+            <li><strong>Règle 71</strong> — Tir UNIQUEMENT sur instruction explicite : <em>"NO shot. Finger off trigger."</em></li>
+            <li><strong>Règle 72</strong> — Synchro labiale : le modèle décide du nombre de dialogues. Caméra stable, lèvres visibles.</li>
+            <li><strong>Règle 73</strong> — Continuité ultra‑précise : <em>"resume_fin"</em> décrit la dernière image.</li>
+            <li><strong>Règle 75</strong> — Description complète des vêtements dans le resume_fin (même les parties invisibles).</li>
+            <li><strong>Règle 77</strong> — INTERDICTION DES GROS PLANS. Utiliser UNIQUEMENT : medium shot, wide shot, full shot.</li>
+            <li><strong>Dialogues</strong> — TOUS les dialogues doivent être en FRANÇAIS.</li>
+            <li><strong>Guillemets</strong> — Dans le prompt final : guillemets droits " ". Dans le tableau : « » (affichage).</li>
+        </ul>
+    </div>
+
+    <div class="form-grid">
+        <div class="form-group">
+            <label>Votre idée de film / segment</label>
+            <textarea id="idea" rows="2" placeholder="Ex: Un pilote dans un cockpit futuriste...">Un détective dans une ruelle nocturne, pluie, néons rouges, marche lente, tension.</textarea>
+        </div>
+        <div class="form-group">
+            <label>Lieu / Décor (optionnel)</label>
+            <input type="text" id="location" placeholder="Ex: Ruelle, cockpit, jungle...">
+        </div>
+        <div class="form-group">
+            <label>Style visuel</label>
+            <select id="style">
+                <option value="Cinématique réaliste">Cinématique réaliste</option>
+                <option value="Cyberpunk néon">Cyberpunk néon</option>
+                <option value="Médiéval fantastique">Médiéval fantastique</option>
+                <option value="Film noir">Film noir</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Scènes par segment</label>
+            <select id="scenesPerSegment">
+                <option value="2">2</option>
+                <option value="3" selected="">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Durée (s, 5-15)</label>
+            <input type="number" id="totalDuration" value="12" min="5" max="15">
+        </div>
+        <div class="form-group">
+            <label>Nombre de segments</label>
+            <input type="number" id="totalSegments" value="1" min="1" max="100">
+        </div>
+        <div class="form-group">
+            <label>Qualité</label>
+            <select id="quality">
+                <option value="360p">360p</option>
+                <option value="540p">540p</option>
+                <option value="720p" selected="">720p</option>
+                <option value="1080p">1080p</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Mode mouvement</label>
+            <select id="motionMode">
+                <option value="Normal">Normal</option>
+                <option value="Fast">Fast</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Mode audio</label>
+            <select id="audioMode">
+                <option value="Auto Sound">Auto Sound</option>
+                <option value="Custom">Personnalisé</option>
+                <option value="None">Silence</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Langue dialogues</label>
+            <select id="dialogLanguage">
+                <option value="Français" selected="">Français</option>
+                <option value="Anglais">Anglais</option>
+                <option value="Espagnol">Espagnol</option>
+            </select>
+        </div>
+        <div class="form-group" style="grid-column:1/-1;">
+            <div class="btn-group">
+                <button class="btn btn-primary" id="analyzeBtn">🔍 Analyser l'image</button>
+                <button class="btn btn-primary" id="generateBtn">🚀 Générer</button>
+                <button class="btn btn-secondary" id="nextBtn" disabled="">⏩ Suivant</button>
+                <button class="btn btn-warning" id="draftBtn">📝 Brouillon</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="status"></div>
+    <div id="segmentsContainer" class="segment-container"></div>
+</div>
+
+<script>
+// ============================================================
+// 1. DOM & ÉTAT
+// ============================================================
+const apiKeyInput = document.getElementById('apiKey');
+const modelSelect = document.getElementById('modelSelect');
+const providerSelect = document.getElementById('providerSelect');
+const providerBadge = document.getElementById('providerBadge');
+const providerHint = document.getElementById('providerHint');
+const ideaInput = document.getElementById('idea');
+const locationInput = document.getElementById('location');
+const styleSelect = document.getElementById('style');
+const scenesPerSegmentSelect = document.getElementById('scenesPerSegment');
+const totalDurationInput = document.getElementById('totalDuration');
+const totalSegmentsInput = document.getElementById('totalSegments');
+const qualitySelect = document.getElementById('quality');
+const motionModeSelect = document.getElementById('motionMode');
+const audioModeSelect = document.getElementById('audioMode');
+const dialogLanguageSelect = document.getElementById('dialogLanguage');
+const generateBtn = document.getElementById('generateBtn');
+const nextBtn = document.getElementById('nextBtn');
+const draftBtn = document.getElementById('draftBtn');
+const analyzeBtn = document.getElementById('analyzeBtn');
+const statusDiv = document.getElementById('status');
+const container = document.getElementById('segmentsContainer');
+const exampleSelect = document.getElementById('exampleSelect');
+const loadExampleBtn = document.getElementById('loadExampleBtn');
+const examplePreview = document.getElementById('examplePreview');
+
+const imageUpload = document.getElementById('imageUpload');
+const uploadArea = document.getElementById('uploadArea');
+const imagePreview = document.getElementById('imagePreview');
+const imageAnalysisResult = document.getElementById('imageAnalysisResult');
+const memoryDisplay = document.getElementById('memoryDisplay');
+const memoryText = document.getElementById('memoryText');
+
+let totalSegments = 1;
+let generatedSegments = 0;
+let lastSegmentSummary = '';
+let isGenerating = false;
+let draftMode = false;
+let imageDescription = '';
+let uploadedImageData = null;
+let currentSegmentData = null;
+let storyHistory = [];
+
+// ============================================================
+// 2. FONCTIONS
+// ============================================================
+function getApiKey() { return apiKeyInput.value.trim(); }
+function getIdea() { return ideaInput.value.trim(); }
+function getLocation() { return locationInput.value.trim(); }
+function getStyle() { return styleSelect.value; }
+function getScenesPerSegment() { return parseInt(scenesPerSegmentSelect.value); }
+function getTotalDuration() { return parseInt(totalDurationInput.value) || 12; }
+function getTotalSegments() { return parseInt(totalSegmentsInput.value) || 1; }
+function getQuality() { return draftMode ? '360p' : qualitySelect.value; }
+function getMotionMode() { return motionModeSelect.value; }
+function getAudioMode() { return audioModeSelect.value; }
+function getDialogLanguage() { return dialogLanguageSelect.value; }
+function getModel() { return modelSelect.value; }
+function ensureQuoted(text) {
+    if (!text) return text;
+    let t = String(text).trim();
+    if (t.startsWith('"') && t.endsWith('"')) return t;
+    return '"' + text + '"';
+}
+
+// ZRO API - compatible OpenAI
+const PROVIDERS = {
+    zro: {
+        label: 'ZRO (moonmath)',
+        baseUrl: 'https://zro.moonmath.ai/v1',
+        modelsUrl: 'https://zro.moonmath.ai/v1/models',
+        freeModel: 'glm-5.3-flash',
+        hint: 'URL : https://zro.moonmath.ai/v1 — Modèle gratuit : glm-5.3-flash'
+    },
+    ollama: {
+        label: 'Ollama',
+        baseUrl: 'https://ollama.com/v1',
+        modelsUrl: 'https://ollama.com/v1/models',
+        freeModel: 'gemma4:31b-cloud',
+        hint: 'URL : https://ollama.com/v1 — Modèle : gemma4:31b-cloud'
+    },
+    ollama_local: {
+        label: 'Ollama (local)',
+        baseUrl: 'http://localhost:11434/v1',
+        modelsUrl: 'http://localhost:11434/v1/models',
+        freeModel: 'gemma4:12b',
+        hint: 'URL : http://localhost:11434/v1 — Lancer Ollama avec OLLAMA_ORIGINS=* (clé : n\'importe quoi, ex. ollama)'
+    },
+    ollama_proxy: {
+        label: 'Ollama (proxy)',
+        baseUrl: 'http://localhost:8788/ollama/v1',
+        modelsUrl: 'http://localhost:8788/ollama/v1/models',
+        freeModel: 'gemma4:31b-cloud',
+        hint: 'Lancer proxy_ollama.py (python proxy_ollama.py) puis utiliser la clé Ollama cloud'
+    },
+    agnes: {
+        label: 'Agnes AI',
+        baseUrl: 'https://apihub.agnes-ai.com/v1',
+        modelsUrl: 'https://apihub.agnes-ai.com/v1/models',
+        freeModel: 'agnes-2.5-flash',
+        hint: 'URL : https://apihub.agnes-ai.com/v1 — Modèles : agnes-2.5-flash (gratuit), agnes-3.0-flash'
+    },
+    openrouter: {
+        label: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelsUrl: 'https://openrouter.ai/api/v1/models',
+        freeModel: 'openrouter/free',
+        hint: 'URL : https://openrouter.ai/api/v1 — Modèle gratuit : openrouter/free (auto)'
+    },
+    google: {
+        label: 'Google AI Studio',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        modelsUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/models',
+        freeModel: 'gemini-3.8-flash',
+        hint: 'URL : https://generativelanguage.googleapis.com/v1beta/openai/ — Modèle gratuit : gemini-3.8-flash'
+    },
+    zai: {
+        label: 'Z.ai (proxy)',
+        baseUrl: 'http://localhost:8788/zai/api/paas/v4',
+        modelsUrl: 'http://localhost:8788/zai/api/paas/v4/models',
+        freeModel: 'glm-5.3',
+        hint: 'Lancer proxy_ollama.py — Cible : https://api.z.ai/api/paas/v4 (pas d\'API gratuite, erreur 429 = quota/solde)'
+    },
+    nvidia: {
+        label: 'NVIDIA NIM (proxy)',
+        baseUrl: 'http://localhost:8788/nvidia/v1',
+        modelsUrl: 'http://localhost:8788/nvidia/v1/models',
+        freeModel: 'meta/llama-3.3-70b-instruct',
+        hint: 'Lancer proxy_ollama.py — Cible : https://integrate.api.nvidia.com/v1 — Noms au format proprietaire/modele (ex. meta/llama-3.3-70b-instruct) : cliquer sur Lister les modèles'
+    }
+};
+
+// Modèles connus par fournisseur (utilisés dans le sélecteur)
+const KNOWN_MODELS = {
+    zro: ['glm-5.3-flash', 'glm-5.3', 'deepseek-4.1-flash'],
+    ollama: ['gemma4:31b-cloud'],
+    ollama_local: ['gemma4:12b'],
+    ollama_proxy: ['gemma4:31b-cloud'],
+    agnes: ['agnes-2.5-flash', 'agnes-3.0-flash'],
+    openrouter: ['openrouter/free'],
+    google: ['gemini-3.8-flash'],
+    zai: ['glm-5.3'],
+    nvidia: ['meta/llama-3.3-70b-instruct']
+};
+
+// Clés préremplies (si aucune clé n'est mémorisée)
+const DEFAULT_KEYS = {
+    zro: 'sk-roxZr15alwrhMEBT3UzVOg',
+    ollama: '972aa97eeab0401f94571ad8b6f0ec0b.Ziv8bh2JNFfzPznj0Ogjyzo8',
+    ollama_local: 'ollama',
+    ollama_proxy: '972aa97eeab0401f94571ad8b6f0ec0b.Ziv8bh2JNFfzPznj0Ogjyzo8'
+};
+
+function getProvider() { return providerSelect.value; }
+function getProviderConfig() { return PROVIDERS[getProvider()]; }
+function getBaseUrl() { return getProviderConfig().baseUrl; }
+function getModelsUrl() { return getProviderConfig().modelsUrl; }
+function getChatUrl() { return getBaseUrl().replace(/\/+$/, '') + '/chat/completions'; }
+
+function updateProviderUI() {
+    const cfg = getProviderConfig();
+    providerBadge.textContent = cfg.label;
+    providerHint.textContent = cfg.hint;
+
+    // Clé API propre au fournisseur
+    let savedKey = '';
+    try { savedKey = localStorage.getItem('api_key_' + getProvider()) || ''; } catch (e) {}
+    apiKeyInput.value = savedKey || DEFAULT_KEYS[getProvider()] || '';
+
+    // Modèle propre au fournisseur
+    let savedModel = '';
+    try { savedModel = localStorage.getItem('model_' + getProvider()) || ''; } catch (e) {}
+
+    const modelsForProvider = KNOWN_MODELS[getProvider()] || [cfg.freeModel];
+
+    modelSelect.innerHTML = '';
+    modelsForProvider.forEach(function(id) {
+        const o = document.createElement('option');
+        o.value = id;
+        o.textContent = (id === cfg.freeModel) ? id + ' (gratuit)' : id;
+        modelSelect.appendChild(o);
+    });
+
+    if (savedModel && modelsForProvider.indexOf(savedModel) !== -1) {
+        modelSelect.value = savedModel;
+    } else {
+        modelSelect.value = cfg.freeModel;
+    }
+}
+
+providerSelect.addEventListener('change', function() {
+    try { localStorage.setItem('provider', getProvider()); } catch (e) {}
+    updateProviderUI();
+    statusDiv.innerHTML = '<div class="status success">✅ Fournisseur : ' + getProviderConfig().label + '</div>';
+});
+
+apiKeyInput.addEventListener('change', function() {
+    try { localStorage.setItem('api_key_' + getProvider(), apiKeyInput.value); } catch (e) {}
+});
+
+modelSelect.addEventListener('change', function() {
+    try { localStorage.setItem('model_' + getProvider(), modelSelect.value); } catch (e) {}
+});
+
+// Progression de l'histoire : acte en cours selon le numéro de segment
+function getActInfo(n, total) {
+    if (total > 1 && n === total) {
+        return { label: 'ACTE 3 – CONCLUSION (DERNIER SEGMENT)', goal: 'Résous le conflit principal et termine l\'histoire par une vraie fin définitive. Aucune nouvelle intrigue.' };
+    }
+    const r = n / total;
+    if (r <= 0.25) return { label: 'ACTE 1 – INTRODUCTION', goal: 'Présente le personnage, le monde, l\'enjeu et l\'élément déclencheur. Installe la situation sans la résoudre.' };
+    if (r <= 0.75) return { label: 'ACTE 2 – DÉVELOPPEMENT', goal: 'Complique l\'intrigue : obstacles, révélations, tension croissante. Fais avancer l\'histoire sans la conclure et sans répéter une situation déjà vue.' };
+    return { label: 'ACTE 3 – CONCLUSION (APPROCHE DU DÉNOUEMENT)', goal: 'Mène vers le climax et le dénouement. Rassemble les fils de l\'intrigue.' };
+}
+
+const EXEMPLES = {
+    pilote: "Un pilote dans un cockpit futuriste, lumières bleues, concentration.",
+    detective: "Un détective dans une ruelle nocturne, pluie, néons rouges, marche lente, tension.",
+    guerriere: "Une guerrière dans un désert brûlant, vent fort, manteau qui flotte, détermination.",
+    astronaute: "Un astronaute sur une lune violette, silence, marche lente, mystère.",
+    cowboy: "Un cowboy dans une ville fantôme, poussière, regard fixe, suspense.",
+    elfe: "Une elfe dans une forêt ancienne, lumière dorée, marche lente, magie.",
+    phare: "Un gardien de phare reçoit un signal radio inattendu, nuit, vent, tension.",
+    chat_chien: "Un chat errant rencontre un chien dans une ruelle, ils se méfient puis s'approchent."
+};
+
+exampleSelect.addEventListener('change', function() {
+    const key = this.value;
+    if (key && EXEMPLES[key]) {
+        examplePreview.textContent = EXEMPLES[key];
+        examplePreview.style.color = '#e2e8f0';
+    } else {
+        examplePreview.textContent = 'Aperçu de l\'idée...';
+        examplePreview.style.color = '#94a3b8';
+    }
+});
+
+loadExampleBtn.addEventListener('click', function() {
+    const key = exampleSelect.value;
+    if (key && EXEMPLES[key]) {
+        ideaInput.value = EXEMPLES[key];
+        statusDiv.innerHTML = '<div class="status success">✅ Idée chargée !</div>';
+    } else {
+        statusDiv.innerHTML = '<div class="status error">❌ Sélectionnez une idée.</div>';
+    }
+});
+
+// ============================================================
+// 3. UPLOAD IMAGE
+// ============================================================
+imageUpload.addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(event) {
+        uploadedImageData = event.target.result;
+        imagePreview.innerHTML = '<img src="' + uploadedImageData + '" alt="Image">';
+        analyzeBtn.disabled = false;
+        analyzeBtn.textContent = '🔍 Analyser l\'image';
+        imageAnalysisResult.style.display = 'none';
+        memoryDisplay.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+});
+
+uploadArea.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    uploadArea.style.borderColor = '#facc15';
+    uploadArea.style.background = '#1f2d45';
+});
+uploadArea.addEventListener('dragleave', function(e) {
+    e.preventDefault();
+    uploadArea.style.borderColor = '#2a3a5a';
+    uploadArea.style.background = '#1a253a';
+});
+uploadArea.addEventListener('drop', function(e) {
+    e.preventDefault();
+    uploadArea.style.borderColor = '#2a3a5a';
+    uploadArea.style.background = '#1a253a';
+    const file = e.dataTransfer.files[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            uploadedImageData = event.target.result;
+            imagePreview.innerHTML = '<img src="' + uploadedImageData + '" alt="Image">';
+            analyzeBtn.disabled = false;
+            analyzeBtn.textContent = '🔍 Analyser l\'image';
+            imageAnalysisResult.style.display = 'none';
+            memoryDisplay.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+});
+
+// ============================================================
+// 4. ANALYSE IMAGE (avec ZRO)
+// ============================================================
+analyzeBtn.addEventListener('click', async function() {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+        statusDiv.innerHTML = '<div class="status error">❌ Veuillez entrer votre clé API.</div>';
+        return;
+    }
+    if (!uploadedImageData) {
+        statusDiv.innerHTML = '<div class="status error">❌ Veuillez d\'abord uploader une image.</div>';
+        return;
+    }
+
+    analyzeBtn.disabled = true;
+    analyzeBtn.textContent = '⏳ Analyse...';
+    statusDiv.innerHTML = '<div class="status loading">🔍 Analyse de l\'image en cours...</div>';
+
+    try {
+        const visionPrompt = `Analyze this image in detail. Describe:
+- The character's appearance (age, hair, eyes, clothing, posture)
+- Any weapon or item they are holding (be precise: type, color, position)
+- The environment and lighting
+- Any notable expression or action
+Use a single paragraph in English, concise but detailed. This description will be used as a visual memory for generating video prompts.`;
+
+        const response = await fetch(getChatUrl(), {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + apiKey,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: getModel(),
+                messages: [{
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: visionPrompt },
+                        { type: 'image_url', image_url: { url: uploadedImageData } }
+                    ]
+                }],
+                temperature: 0.5,
+                max_tokens: 500
+            })
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error('Erreur API (' + response.status + ') : ' + errText);
+        }
+        const data = await response.json();
+        const textContent = data.choices?.[0]?.message?.content;
+        if (!textContent) {
+            throw new Error('Réponse vide ou format inattendu.');
+        }
+        imageDescription = textContent.trim();
+
+        memoryText.textContent = imageDescription;
+        memoryDisplay.style.display = 'block';
+        imageAnalysisResult.style.display = 'block';
+        imageAnalysisResult.innerHTML = '✅ Image analysée et mémorisée !';
+        generateBtn.disabled = false;
+        analyzeBtn.disabled = false;
+        analyzeBtn.textContent = '🔍 Ré-analyser';
+        statusDiv.innerHTML = '<div class="status success">✅ Image analysée avec succès !</div>';
+    } catch (err) {
+        statusDiv.innerHTML = '<div class="status error">❌ Erreur : ' + err.message + '</div>';
+        analyzeBtn.disabled = false;
+        analyzeBtn.textContent = '🔍 Analyser l\'image';
+    }
+});
+
+// ============================================================
+// 5. BUILD PROMPT (AVEC LANGUE ET RÈGLE 77)
+// ============================================================
+function buildPrompt(segmentNumber, totalSegments, idea, style, scenesCount, totalDuration, previousSummary, dialogLang, motionMode, audioMode, location, imageDesc) {
+    const durationPerScene = (totalDuration / scenesCount).toFixed(1);
+    let context = previousSummary ?
+        '- Continuity from previous segment (last frame) : "' + previousSummary + '"\nEnsure perfect continuity.' :
+        '- First segment.';
+
+    let locationBlock = location ? '\n- Setting : ' + location : '';
+    let memoryBlock = imageDesc ? '\n- VISUAL MEMORY (from the reference image) : ' + imageDesc : '';
+
+    let audioInstruction = '';
+    if (audioMode === 'Auto Sound') audioInstruction = 'Include diegetic sound cues with spatialization. No music unless specified.';
+    else if (audioMode === 'None') audioInstruction = 'No music or dialogue.';
+    else audioInstruction = 'Audio will be described manually with spatialization.';
+
+    const hasImage = imageDesc && imageDesc.trim().length > 0;
+    const imageRule = hasImage ?
+        '⚠️ RÈGLE 69 (OBLIGATOIRE) : UNE IMAGE EST FOURNIE. NE PAS décrire le personnage (sauf pour les vêtements si nécessaire).' :
+        '✅ AUCUNE image fournie. Vous pouvez décrire librement le personnage.';
+
+    const act = getActInfo(segmentNumber, totalSegments);
+    const filmMinutes = Math.round((totalSegments * totalDuration) / 60 * 10) / 10;
+    const storyBlock = storyHistory.length ?
+        storyHistory.map(function(t, i) { return 'Segment ' + (i + 1) + ' : ' + t; }).join('\n') :
+        'Aucun segment précédent : c\'est le tout début de l\'histoire.';
+
+    return `You are a visionary film director — Spielberg + Cameron + Nolan + Deakins + Williams + Kahn.
+
+🎯 OBJECTIF GLOBAL : Tu dois créer un film complet de ${totalSegments} segments de ${totalDuration} secondes (environ ${filmMinutes} minutes). L'histoire doit avancer selon une structure en 3 actes : 1) Introduction, 2) Développement, 3) Conclusion. Tu avances segment par segment en respectant la progression narrative. Chaque segment doit FAIRE AVANCER l'intrigue : jamais de répétition, jamais de surplace.
+
+
+🎬 RÈGLE 67 – RÉALISATEUR UNIVERSEL :
+- L'idée de l'utilisateur EST le sujet. Tu l'enrichis.
+- Le nom du personnage est adapté au sujet. NE JAMAIS forcer un nom ou un lieu.
+
+${imageRule}
+
+⚠️ LANGUE DES DIALOGUES (OBLIGATOIRE) :
+- TOUS les dialogues doivent être en FRANÇAIS.
+- Utiliser UNIQUEMENT la langue française pour les dialogues.
+- Les dialogues en anglais sont INTERDITS.
+- L'utilisateur a sélectionné la langue : ${dialogLang}.
+- Si c'est "Français", les dialogues DOIVENT être en français.
+- Exemple correct : "Elle chuchote : "Cet endroit... c'est exactement comme je l'imaginais.""
+- Exemple incorrect : "She whispers: "This place... it's exactly how I imagined it.""
+
+⚠️ RÈGLE 77 – PLANS AUTORISÉS UNIQUEMENT (OBLIGATOIRE) :
+- Utilise UNIQUEMENT ces types de plans : "medium shot", "wide shot", "full shot", "medium close-up".
+- Les plans suivants sont STRICTEMENT INTERDITS : "close-up", "extreme close-up", "tight shot", "gros plan", "extreme gros plan".
+- Dans le prompt final, ajoute TOUJOURS cette phrase exacte : "Use only medium, wide, or full shots."
+- Cette règle est ABSOLUE.
+
+⚠️ RÈGLE 75 – DESCRIPTION COMPLÈTE DES VÊTEMENTS DANS LE RESUME_FIN :
+- Le champ "resume_fin" doit décrire le personnage COMPLET, même si le plan ne montre pas tout.
+- Obligatoire : vêtements (haut + bas + chaussures), arme, accessoires, coiffure.
+- Le segment suivant doit reprendre ces vêtements pour le personnage.
+
+⚠️ RÈGLE 72 – SYNCHRO LABIALE (libre et créative) :
+- Le modèle décide combien de dialogues sont nécessaires pour le segment.
+- Chaque dialogue doit être audible et synchronisé avec le mouvement des lèvres.
+- La caméra doit être STABLE pendant le dialogue.
+- Les lèvres doivent être VISIBLES dans le cadre.
+
+⚠️ DIRECTIVE DIALOGUES – STYLE SCÉNARISTE (OBLIGATOIRE) :
+- Les dialogues doivent avoir du SOUS‑TEXTE : le personnage ne dit jamais exactement ce qu'il pense.
+- Utilise des NON‑DITS : des silences, des regards, des gestes qui parlent plus que les mots.
+- Chaque personnage a une VOIX UNIQUE : vocabulaire, longueur des phrases, tonalité.
+- Évite les dialogues "explicatifs" (qui décrivent ce qu'on voit à l'écran).
+- Privilégie les répliques COURTES et INCISIVES (max 10 mots sauf exception).
+- Un bon dialogue de film, c'est 70 % de sous‑texte, 30 % de texte.
+- Inspirez‑vous du style de : Quentin Tarantino (répartie), Aaron Sorkin (rythme), ou Céline Sciamma (intimité).
+
+⚠️ RÈGLE 71 – TIR UNIQUEMENT SUR INSTRUCTION EXPLICITE :
+- Pour ÉVITER un tir : ajouter en DÉBUT de prompt : "NO shot. Finger off trigger."
+- Pour DÉCLENCHER un tir : écrire : "She fires once, the gunshot echoing 25m away."
+- Si le personnage a une arme mais ne tire pas, la mention "NO shot. Finger off trigger." DOIT apparaître dans le prompt final.
+- Ne jamais décrire un tir sans cette instruction explicite.
+
+⚠️ RÈGLE 70 – TIR ET DÉTONATION (si tir souhaité) :
+- Isoler le tir dans une phrase séparée.
+- Structure : pause → action de tir → son de détonation.
+
+⚠️ RÈGLE 73 – CONTINUITÉ ULTRA‑PRÉCISE :
+- Le champ "resume_fin" doit décrire la DERNIÈRE IMAGE comme une PHOTO.
+- Obligatoire : position, regard, arme, lumière, plan.
+- INCLURE LA DESCRIPTION COMPLÈTE DES VÊTEMENTS (Règle 75).
+
+⚠️ BIBLE DU RÉALISME – COMPRÉHENSION DU MONDE PHYSIQUE (20 RÈGLES OBLIGATOIRES) :
+
+1. Les objets ne disparaissent pas, n’apparaissent pas, ne se déplacent pas tout seuls. Toute interaction doit être décrite (prise, pose, rangement).
+
+2. Les personnages se déplacent de manière réaliste : ils marchent, courent, se baissent, se relèvent. Aucun mouvement instantané ou "magique".
+
+3. Les mains et les objets interagissent physiquement : une main doit toucher, saisir, tenir, lâcher un objet.
+
+4. Les portes s’ouvrent et se ferment : un personnage doit pousser, tirer, tourner la poignée.
+
+5. Les vêtements restent identiques d’un segment à l’autre, sauf si une action explicite les change (ex: enlever, enfiler).
+
+6. La lumière est cohérente : elle provient d’une source identifiable (soleil, lampe, fenêtre) et son évolution est justifiée.
+
+7. Les objets importants (carte, arme, livre, sac) restent visibles et cohérents dans leur position.
+
+8. Les personnages respirent : leur souffle, leur émotion, leur fatigue doivent être visibles ou audibles.
+
+9. La gravité existe : les objets tombent, les vêtements pendent, les corps s’appuient.
+
+10. Les transitions entre les scènes sont logiques : si un personnage est assis, il doit se lever avant de se déplacer. Pas de saut temporel injustifié.
+
+11. CAUSALITÉ : Toute action a une conséquence visible ou audible (bruit, mouvement, changement).
+
+12. TEMPS : Les actions ont une durée. Un déplacement ou une action ne s’effectue pas instantanément.
+
+13. LIMITES CORPORELLES : Un personnage ne traverse pas un mur, ne flotte pas, n’a pas de mouvements impossibles.
+
+14. CONTINUITÉ SPATIALE : Les lieux sont connectés logiquement. Une porte mène à un lieu cohérent.
+
+15. PHYSIQUE DES SONS : Les sons ont une source identifiable et une distance spatiale (ex: "15m à gauche").
+
+16. INTERACTIONS SOCIALES : Les personnages se regardent, se répondent, ne parlent pas en même temps.
+
+17. POIDS DES OBJETS : Un personnage ne peut pas porter un objet trop lourd sans effort visible.
+
+18. OMBRES ET REFLETS : Les ombres sont cohérentes avec la source de lumière. Les reflets existent.
+
+19. MÉTÉO : La météo ne change pas brutalement sans raison (pluie, vent, soleil).
+
+20. ÉMOTIONS PHYSIQUES : Les émotions se manifestent physiquement (tremblements, rougeur, larmes, respiration).
+
+---
+CONTEXT :
+- Film : "${idea}"
+- Visual style : "${style}"
+${locationBlock}
+${memoryBlock}
+- Segment ${segmentNumber}/${totalSegments} — duration : ${totalDuration} seconds
+- ${scenesCount} scenes of ${durationPerScene}s each.
+${context}
+- HISTOIRE RACONTÉE JUSQU'ICI :
+${storyBlock}
+- POSITION DANS LE FILM : ${act.label} — ${act.goal}
+
+RESPONSABILITÉS :
+1. Crée un SEGMENT COMPLET : scénario, mise en scène, photographie, musique, dialogues, sons, prompt PixVerse.
+2. Write each scene with : action, camera, dialogue (with tonalité), sound.
+3. Pour chaque dialogue, APPLIQUER LA RÈGLE 72.
+4. Include "The same [objet] remains visible throughout, never changing shape or color."
+5. Include spatialized distances for sounds.
+6. Include "NO shot. Finger off trigger." if aiming but no shooting.
+7. APPLIQUER LA RÈGLE 73 + 75 pour "resume_fin".
+8. APPLIQUER LA RÈGLE 77 : INTERDICTION DES GROS PLANS. Utiliser medium shot, wide shot, full shot.
+9. APPLIQUER LA RÈGLE DE LANGUE : TOUS les dialogues en FRANÇAIS. Les dialogues en anglais sont INTERDITS.
+10. IMPORTANT : Les dialogues dans le tableau seront affichés avec des guillemets français « ». Dans le prompt final, utilisez des guillemets doubles " ".
+11. APPLIQUER LA BIBLE DU RÉALISME (20 règles physiques) : garantit la cohérence du monde réel, l'interaction des objets, la logique spatiale, la causalité, la continuité temporelle et l'expression physique des émotions.
+12. PROGRESSION NARRATIVE : respecte l'acte indiqué dans POSITION DANS LE FILM, prolonge l'HISTOIRE RACONTÉE JUSQU'ICI sans la répéter, et renseigne "resume_histoire" (2 phrases maximum : ce qui s'est passé dans ce segment, l'enjeu en cours).
+
+
+
+IMPORTANT - SÉPARATION DES DIALOGUES :
+- Quand plusieurs dialogues sont présents, ils doivent être SÉPARÉS par une pause ou une action.
+- Exemple : "Elle chuchote : "..." Elle marque une pause, puis murmure : "..."
+- Ne JAMAIS utiliser "followed by" pour coller des dialogues.
+
+Respond ONLY in JSON with this structure :
+{
+  "segment_number": ${segmentNumber},
+  "total_duration": "${totalDuration} seconds",
+  "scenario": "Description de la scène en français.",
+  "mise_en_scene": {
+    "camera": "Description des mouvements de caméra (médium shot, wide shot)",
+    "lumiere": "Description de la lumière",
+    "plans": ["plan large", "plan moyen", "plan rapproché (medium close-up)"]
+  },
+  "photographie": "Ambiance visuelle, couleurs, textures",
+  "musique": "Style musical, émotion",
+  "dialogues": ["dialogue 1 en français", "dialogue 2 en français"],
+  "sons_ambiants": ["son 1", "son 2"],
+  "scenes": [
+    {"id": 1, "action": "...", "camera": "...", "dialogue": "Dialogue avec tonalité en français (ex: (chuchoté, urgent) « T’es là… Je le sais. »)", "musique": "...", "duree": "0:00-0:${durationPerScene}"}
+  ],
+  "ambiance_sonore": "Global sound description",
+  "voix_haute": ["Key lines in French"],
+  "resume_fin": "PLAN [large/moyen/rapproché] : [position exacte], [regard], [arme], [lumière], [sons], [météo]. VÊTEMENTS COMPLETS (même hors plan) : [haut], [bas], [chaussures], [accessoires]. Le segment suivant doit reprendre EXACTEMENT ce personnage avec ces vêtements.",
+  "resume_histoire": "Résumé narratif en français (2 phrases max) : événements de ce segment + enjeu en cours. Pas de description visuelle.",
+  "prompt_pixverse": "The single paragraph in English (${hasImage ? '50-80' : '50-120'} words), with dialogues SEPARATED in quotes and with tonalité, applying RÈGLE 72, 71, 73, and RÈGLE 77 (NO close-ups, only medium/wide shots). IMPORTANT : ALL DIALOGUES MUST BE IN FRENCH. Use double quotes \" \" for dialogues.",
+  "recommandation_segment_suivant": { "nombre_scenes": 3, "raison": "brief justification" }
+}`;
+}
+
+// ============================================================
+// 6. FONCTIONS DE REMPLACEMENT
+// ============================================================
+function normalizeDialogueForPrompt(raw) {
+    let text = raw.trim();
+    text = text.replace(/^["'«»]|["'«»]$/g, '');
+    return text;
+}
+
+function extractDialogues(text) {
+    const regex = /["']([^"']*)["']/g;
+    const matches = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        const content = match[1].trim();
+        if (content.length > 0) {
+            matches.push(content);
+        }
+    }
+    return matches;
+}
+
+function replaceNthQuoted(text, n, newContent) {
+    const regex = /["']([^"']*)["']/g;
+    let matches = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        matches.push({
+            start: match.index,
+            end: regex.lastIndex,
+            full: match[0],
+            content: match[1],
+            quote: match[0][0]
+        });
+    }
+    if (n >= matches.length) return text;
+    const target = matches[n];
+    const before = text.substring(0, target.start);
+    const after = text.substring(target.end);
+    return before + target.quote + newContent + target.quote + after;
+}
+
+window.applyDialogueFromTable = function(segNum, sceneIndex, inputId) {
+    const input = document.getElementById(inputId);
+    if (!input) {
+        console.error("Input not found:", inputId);
+        return;
+    }
+    const raw = input.value.trim();
+    if (!raw) {
+        alert('Le dialogue ne peut pas être vide.');
+        return;
+    }
+
+    let tone = '';
+    let text = raw;
+    const toneMatch = raw.match(/\([^)]*\)/);
+    if (toneMatch) {
+        tone = toneMatch[0];
+        text = raw.replace(/\([^)]*\)/, '').trim();
+    }
+    text = normalizeDialogueForPrompt(text);
+
+    const formatted = '"' + text + '"' + (tone ? ' ' + tone : '');
+
+    const promptBox = document.getElementById('pvPrompt-' + segNum);
+    if (!promptBox) {
+        console.error("Prompt box not found:", 'pvPrompt-' + segNum);
+        return;
+    }
+
+    let fullText = promptBox.textContent;
+    const negIndex = fullText.indexOf('Negative prompt:');
+    let promptPart = negIndex !== -1 ? fullText.substring(0, negIndex).trim() : fullText;
+    let negativePart = negIndex !== -1 ? fullText.substring(negIndex) : '';
+
+    const sceneDialogues = currentSegmentData && currentSegmentData.scenes ? 
+        currentSegmentData.scenes.map(s => s.dialogue || '') : [];
+
+    let countBefore = 0;
+    for (let i = 0; i < sceneIndex; i++) {
+        if (sceneDialogues[i] && sceneDialogues[i].trim() !== '') {
+            countBefore++;
+        }
+    }
+
+    const allDialogues = extractDialogues(promptPart);
+    
+    if (countBefore >= allDialogues.length) {
+        alert('Aucun dialogue trouvé à l\'index ' + countBefore + '. Il n\'y a que ' + allDialogues.length + ' dialogue(s) dans le prompt.');
+        return;
+    }
+
+    const newPrompt = replaceNthQuoted(promptPart, countBefore, text);
+
+    if (newPrompt === promptPart) {
+        alert('Aucun dialogue trouvé à l\'index ' + countBefore + '. Vérifiez que le dialogue existe dans le prompt.');
+        return;
+    }
+
+    promptBox.textContent = negativePart ? newPrompt + '\n\n' + negativePart : newPrompt;
+    statusDiv.innerHTML = '<div style="color:#86efac; font-weight:600;">✅ Dialogue de la scène ' + (sceneIndex+1) + ' remplacé.</div>';
+};
+
+// ============================================================
+// 7. APPEL ZRO
+// ============================================================
+async function callOpenRouter(prompt) {
+    const apiKey = getApiKey();
+    if (!apiKey) throw new Error('Clé API manquante.');
+
+    const SYSTEM_PROMPT = `Tu es un réalisateur de cinéma universel — Spielberg + Cameron + Nolan + Deakins + Williams + Kahn.
+
+RÈGLES ABSOLUES :
+- Règle 67 : Réalisateur universel.
+- Règle 69 : NE PAS décrire le personnage si une image est fournie (sauf vêtements).
+- Règle 75 : DESCRIPTION COMPLÈTE DES VÊTEMENTS dans le resume_fin.
+- Règle 72 : Synchro labiale libre. Caméra stable, lèvres visibles.
+- Règle 71 : Tir uniquement sur instruction explicite.
+- Règle 70 : Isoler le tir dans une phrase séparée.
+- Règle 73 : resume_fin ultra-précis.
+- Règle 77 : INTERDICTION DES GROS PLANS. Utiliser UNIQUEMENT : medium shot, wide shot, full shot.
+
+⚠️ LANGUE DES DIALOGUES (OBLIGATOIRE) :
+- TOUS les dialogues doivent être en FRANÇAIS.
+- Utiliser UNIQUEMENT la langue française pour les dialogues.
+- Les dialogues en anglais sont INTERDITS.
+- Exemple correct : "Elle chuchote : "Cet endroit... c'est exactement comme je l'imaginais.""
+- Exemple incorrect : "She whispers: "This place... it's exactly how I imagined it.""
+
+⚠️ GUILLEMETS DES DIALOGUES (OBLIGATOIRE) :
+- Dans le prompt final, TOUS les dialogues doivent utiliser des guillemets doubles " ".
+- Dans le tableau, les dialogues seront affichés avec des guillemets français « » pour la lisibilité.
+
+IMPORTANT - SÉPARATION DES DIALOGUES :
+- Quand plusieurs dialogues sont présents, sépare-les avec une pause ou une action.
+- Exemple : "Elle chuchote : "..." Elle marque une pause, puis murmure : "..."
+- Ne JAMAIS utiliser "followed by" pour coller des dialogues.
+
+RÉPONDS UNIQUEMENT EN JSON AVEC LA STRUCTURE DEMANDÉE.`;
+
+    const response = await fetch(getChatUrl(), {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + apiKey,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            model: getModel(),
+            messages: [
+                { role: 'system', content: SYSTEM_PROMPT },
+                { role: 'user', content: prompt }
+            ],
+            temperature: 0.7
+        })
+    });
+
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error('Erreur API (' + response.status + ') : ' + errText);
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+        throw new Error('Réponse vide ou format inattendu.');
+    }
+
+    // Nettoyer les éventuels backticks Markdown autour du JSON
+    const jsonContent = content.replace(/```json\s*|```\s*/g, '').trim();
+    return JSON.parse(jsonContent);
+}
+
+function copyPvPrompt(elId) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    navigator.clipboard.writeText(el.textContent).then(() => {
+        statusDiv.innerHTML = '<div style="color:#86efac; font-weight:600;">📋 Prompt copié !</div>';
+    }).catch(() => {
+        statusDiv.innerHTML = '<div style="color:#f87171; font-weight:600;">❌ Copie auto impossible.</div>';
+    });
+}
+
+// ============================================================
+// 8. RENDER (stable : tableau en « », prompt normalisé en " ")
+// ============================================================
+function renderSegment(data) {
+    const segNum = data.segment_number || (generatedSegments + 1);
+    const quality = getQuality();
+    const totalDuration = getTotalDuration();
+    const costPerSecond = quality === '360p' ? 8 : quality === '540p' ? 10 : quality === '720p' ? 12 : 18;
+    const totalCost = Math.round(totalDuration * costPerSecond);
+
+    currentSegmentData = data;
+
+    let html = '<div class="segment-title">📽️ Segment ' + segNum + '</div>';
+    html += '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">';
+    html += '<span class="credit-badge">🎯 ' + quality + '</span>';
+    html += '<span class="credit-badge">🎬 ' + getMotionMode() + '</span>';
+    html += '<span class="credit-badge">🔊 ' + getAudioMode() + '</span>';
+    html += '<span class="credit-badge">💰 ' + totalCost + ' crédits</span>';
+    html += '<span class="credit-badge">📋 ' + getScenesPerSegment() + ' scènes</span>';
+    html += '<span class="credit-badge gold">🎬 ' + getProviderConfig().label + ' · ' + getModel() + '</span>';
+    if (imageDescription) {
+        html += '<span class="credit-badge" style="border-color:#22c55e;color:#86efac;">📸 RÈGLE 69</span>';
+    }
+    html += '</div>';
+
+    if (data.scenario) {
+        html += '<div class="meta-section" style="border-left-color:#facc15;"><h3>📖 SCÉNARIO</h3><p>' + data.scenario + '</p></div>';
+    }
+    if (data.mise_en_scene) {
+        html += '<div class="meta-section" style="border-left-color:#3b82f6;"><h3>🎥 MISE EN SCÈNE</h3>';
+        if (data.mise_en_scene.camera) html += '<p><strong>Caméra :</strong> ' + data.mise_en_scene.camera + '</p>';
+        if (data.mise_en_scene.lumiere) html += '<p><strong>Lumière :</strong> ' + data.mise_en_scene.lumiere + '</p>';
+        if (data.mise_en_scene.plans) html += '<p><strong>Plans :</strong> ' + data.mise_en_scene.plans.join(' → ') + '</p>';
+        html += '</div>';
+    }
+    if (data.photographie) {
+        html += '<div class="meta-section" style="border-left-color:#8b5cf6;"><h3>📷 PHOTOGRAPHIE</h3><p>' + data.photographie + '</p></div>';
+    }
+    if (data.musique) {
+        html += '<div class="meta-section" style="border-left-color:#ec4899;"><h3>🎵 MUSIQUE</h3><p>' + data.musique + '</p></div>';
+    }
+    if (data.dialogues || data.sons_ambiants) {
+        html += '<div class="meta-section" style="border-left-color:#22c55e;">';
+        if (data.dialogues && data.dialogues.length) {
+            html += '<h3>🗣️ DIALOGUES</h3><div class="voice-lines">';
+            data.dialogues.forEach(function(d) { html += '<span>' + ensureQuoted(d) + '</span>'; });
+            html += '</div>';
+        }
+        if (data.sons_ambiants && data.sons_ambiants.length) {
+            html += '<h3 style="margin-top:6px;">🔊 SONS AMBIANTS</h3><div class="voice-lines">';
+            data.sons_ambiants.forEach(function(s) { html += '<span style="border-color:#22c55e;color:#86efac;">' + s + '</span>'; });
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+
+    let pvPrompt = data.prompt_pixverse || '';
+
+    // NORMALISATION 1 : Guillemets français → guillemets droits
+    pvPrompt = pvPrompt.replace(/[«»]/g, '"');
+    pvPrompt = pvPrompt.replace(/'/g, '"');
+
+    // NORMALISATION 2 : Suppression des close-ups (Règle 77)
+    const closeUpPatterns = [
+        /extreme close-up/gi,
+        /close-up/gi,
+        /tight shot/gi,
+        /extreme gros plan/gi,
+        /gros plan/gi,
+        /plan rapproché/gi
+    ];
+    closeUpPatterns.forEach(function(pattern) {
+        pvPrompt = pvPrompt.replace(pattern, 'medium shot');
+    });
+
+
+    if (!pvPrompt.includes('medium shot') && !pvPrompt.includes('wide shot') && !pvPrompt.includes('full shot')) {
+        pvPrompt = pvPrompt.replace(/([.!?])\s*/, '$1 Medium shot, ');
+    }
+
+    const negativePrompt = 'deformed faces, flickering, extra fingers, incorrect anatomy, bad proportions, unnatural lighting, disappearing weapon, holstered weapon, blur, text, watermarks, extra limbs, flat lighting, oversaturated colors';
+    const fullPrompt = pvPrompt + '\n\nNegative prompt: ' + negativePrompt;
+    const charCount = fullPrompt.length;
+    const charColor = charCount > 1500 ? '#eab308' : '#86efac';
+    const promptBoxId = 'pvPrompt-' + segNum;
+
+    html += '<div class="meta-section" style="border-left-color:#facc15;">';
+    html += '<h3>🎬 PROMPT PIXVERSE V6 (' + getTotalDuration() + 's) — ' + quality + '</h3>';
+    html += '<p style="font-size:0.75rem; color:#94a3b8; margin-bottom:6px;">🔒 Règle 77 : Plans moyens/larges uniquement | 🔒 Guillemets normalisés " " | 🔒 Dialogues en français</p>';
+    html += '<div class="result-box" id="' + promptBoxId + '" contenteditable="true">' + fullPrompt + '</div>';
+    html += '<div class="flex"><button class="btn btn-primary btn-sm" onclick="copyPvPrompt(\'' + promptBoxId + '\')">📋 Copier</button>';
+    html += '<span style="font-size:0.75rem; color:' + charColor + ';">' + charCount + ' / 1500</span></div></div>';
+
+    // TABLEAU AVEC DIALOGUES AFFICHÉS EN « »
+    html += '<table class="storyboard-table"><thead><tr>';
+    html += '<th>SCÈNE</th><th>ACTION</th><th>CAMÉRA</th><th>DIALOGUE (1 par scène max)</th><th>SON</th><th>DURÉE</th>';
+    html += '</tr></thead><tbody>';
+
+    if (data.scenes && data.scenes.length) {
+        const dialoguesFromPrompt = extractDialogues(pvPrompt);
+
+        data.scenes.forEach(function(scene, index) {
+            const dialog = scene.dialogue || '';
+            const hasDialog = dialog && dialog.trim().length > 0;
+            let dialogToShow = hasDialog ? dialog : (dialoguesFromPrompt[index] || '');
+            const inputId = 'dialogue-' + segNum + '-' + index;
+
+            html += '<tr>';
+            html += '<td class="scene-id">' + scene.id + '</td>';
+            html += '<td>' + (scene.action || '-') + '</td>';
+            html += '<td>' + (scene.camera || '-') + '</td>';
+
+            if (dialogToShow.trim() !== '') {
+                html += '<td style="min-width:220px;">';
+                html += '<div class="dialogue-cell">';
+                html += '<textarea id="' + inputId + '" class="dialogue-input" rows="4" placeholder="3-5 mots + tonalité (en français)">' + dialogToShow + '</textarea>';
+                html += '<button class="btn-sm btn-primary" onclick="applyDialogueFromTable(' + segNum + ', ' + index + ', \'' + inputId + '\')">✅ Remplacer</button>';
+                html += '</div>';
+                html += '</td>';
+            } else {
+                html += '<td style="color:#64748b;">🔇</td>';
+            }
+
+            html += '<td>' + (scene.musique || '-') + '</td>';
+            html += '<td>' + (scene.duree || '-') + '</td>';
+            html += '</tr>';
+        });
+    } else {
+        html += '<tr><td colspan="6" style="text-align:center;color:#64748b;">Aucune scène générée</td></tr>';
+    }
+    html += '</tbody></table>';
+
+    if (data.ambiance_sonore) {
+        html += '<div class="meta-section" style="border-left-color:#22c55e;"><h3>🔊 AMBIANCE SONORE</h3><p>' + data.ambiance_sonore + '</p></div>';
+    }
+    if (data.voix_haute && data.voix_haute.length) {
+        html += '<div class="meta-section" style="border-left-color:#facc15;"><h3>🗣️ VOIX À HAUTE VOIX</h3><div class="voice-lines">';
+        data.voix_haute.forEach(function(line) { html += '<span>' + ensureQuoted(line) + '</span>'; });
+        html += '</div></div>';
+    }
+
+    html += '<div class="continuity-box"><strong>🔄 Résumé de fin (Règle 73 + 75) :</strong><br>' + (data.resume_fin || 'Non spécifié') + '</div>';
+    html += '<div class="continuity-box" style="border-left-color:#22c55e;"><strong>📖 Histoire (' + getActInfo(segNum, getTotalSegments()).label + ') :</strong><br>' + (data.resume_histoire || 'Non spécifié') + '</div>';
+    const reco = data.recommandation_segment_suivant;
+    if (reco && reco.nombre_scenes) {
+        html += '<div class="reco-box">💡 <strong>Recommandation :</strong> ' + reco.nombre_scenes + ' scènes — ' + (reco.raison || '') + '</div>';
+    }
+
+    const block = document.createElement('div');
+    block.className = 'segment-block';
+    block.innerHTML = html;
+    container.appendChild(block);
+
+    lastSegmentSummary = data.resume_fin || 'Fin du segment ' + segNum;
+    storyHistory.push(data.resume_histoire || data.scenario || ('Segment ' + segNum));
+    generatedSegments++;
+
+    if (generatedSegments >= totalSegments) {
+        nextBtn.disabled = true;
+        generateBtn.disabled = false;
+    } else {
+        nextBtn.disabled = false;
+        generateBtn.disabled = true;
+    }
+}
+
+// ============================================================
+// 9. GENERATION
+// ============================================================
+async function generateSegment(segmentNumber, total, idea, style, scenesCount, totalDuration, previousSummary, dialogLang, motionMode, audioMode, location, imageDesc) {
+    const prompt = buildPrompt(segmentNumber, total, idea, style, scenesCount, totalDuration, previousSummary, dialogLang, motionMode, audioMode, location, imageDesc);
+    return await callOpenRouter(prompt);
+}
+
+async function generateAll() {
+    if (isGenerating) return;
+
+    isGenerating = true;
+    generateBtn.disabled = true;
+    nextBtn.disabled = true;
+    statusDiv.innerHTML = '<div class="status loading">🎬 Génération...</div>';
+    container.innerHTML = '';
+    generatedSegments = 0;
+    lastSegmentSummary = '';
+    storyHistory = [];
+
+    const idea = getIdea();
+    const style = getStyle();
+    const location = getLocation();
+    const totalDuration = getTotalDuration();
+    totalSegments = getTotalSegments();
+    const dialogLang = getDialogLanguage();
+    const motionMode = getMotionMode();
+    const audioMode = getAudioMode();
+
+    for (let i = 1; i <= totalSegments; i++) {
+        const scenesCount = getScenesPerSegment();
+        statusDiv.innerHTML = '<div class="status loading">🎬 Segment ' + i + '/' + totalSegments + ' (' + scenesCount + ' scènes)...</div>';
+        try {
+            const data = await generateSegment(i, totalSegments, idea, style, scenesCount, totalDuration, lastSegmentSummary, dialogLang, motionMode, audioMode, location, imageDescription);
+            renderSegment(data);
+        } catch (err) {
+            statusDiv.innerHTML = '<div class="status error">❌ Erreur segment ' + i + ' : ' + err.message + '</div>';
+            isGenerating = false;
+            generateBtn.disabled = false;
+            return;
+        }
+    }
+
+    statusDiv.innerHTML = '<div class="status success">✅ ' + totalSegments + ' segments générés !</div>';
+    isGenerating = false;
+    generateBtn.disabled = false;
+    nextBtn.disabled = true;
+}
+
+async function generateNext() {
+    if (isGenerating) return;
+    if (generatedSegments >= totalSegments) {
+        statusDiv.innerHTML = '<div class="status error">Tous les segments sont générés.</div>';
+        return;
+    }
+
+    isGenerating = true;
+    nextBtn.disabled = true;
+    generateBtn.disabled = true;
+    statusDiv.innerHTML = '<div class="status loading">🎬 Segment ' + (generatedSegments + 1) + '...</div>';
+
+    const idea = getIdea();
+    const style = getStyle();
+    const location = getLocation();
+    const scenesCount = getScenesPerSegment();
+    const totalDuration = getTotalDuration();
+    totalSegments = getTotalSegments();
+    const dialogLang = getDialogLanguage();
+    const motionMode = getMotionMode();
+    const audioMode = getAudioMode();
+
+    try {
+        const segNum = generatedSegments + 1;
+        const data = await generateSegment(segNum, totalSegments, idea, style, scenesCount, totalDuration, lastSegmentSummary, dialogLang, motionMode, audioMode, location, imageDescription);
+        renderSegment(data);
+        statusDiv.innerHTML = '<div class="status success">✅ Segment ' + segNum + ' généré.</div>';
+    } catch (err) {
+        statusDiv.innerHTML = '<div class="status error">❌ Erreur : ' + err.message + '</div>';
+    }
+
+    isGenerating = false;
+    if (generatedSegments >= totalSegments) {
+        nextBtn.disabled = true;
+        generateBtn.disabled = false;
+    } else {
+        nextBtn.disabled = false;
+        generateBtn.disabled = true;
+    }
+}
+
+// ============================================================
+// 10. EVENTS
+// ============================================================
+draftBtn.addEventListener('click', function() {
+    draftMode = !draftMode;
+    this.textContent = draftMode ? '🎯 Brouillon activé' : '📝 Mode brouillon';
+    this.style.background = draftMode ? '#dc2626' : '#f59e0b';
+    this.style.color = draftMode ? 'white' : '#0a0f1e';
+    statusDiv.innerHTML = draftMode ?
+        '<div class="status loading">🔧 Mode brouillon – 360p</div>' :
+        '<div class="status success">✅ Mode normal – ' + qualitySelect.value + '</div>';
+});
+
+generateBtn.addEventListener('click', generateAll);
+nextBtn.addEventListener('click', generateNext);
+
+window.addEventListener('load', function() {
+    try {
+        const savedProvider = localStorage.getItem('provider');
+        if (savedProvider && PROVIDERS[savedProvider]) {
+            providerSelect.value = savedProvider;
+        }
+    } catch (e) {}
+    updateProviderUI();
+
+    totalSegments = getTotalSegments();
+    if ((['zro','ollama_local','ollama_proxy','nvidia','zai'].indexOf(getProvider()) !== -1) && getApiKey()) {
+        document.getElementById('listModelsBtn').click();
+    }
+});
+
+document.getElementById('listModelsBtn').addEventListener('click', async function() {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+        statusDiv.innerHTML = '<div class="status error">❌ Entrez votre clé API.</div>';
+        return;
+    }
+    statusDiv.innerHTML = '<div class="status loading">🔄 Récupération des modèles...</div>';
+    try {
+        const r = await fetch(getModelsUrl(), { headers: { 'Authorization': 'Bearer ' + apiKey } });
+        if (!r.ok) throw new Error('Erreur API (' + r.status + ') : ' + await r.text());
+        const d = await r.json();
+        const ids = (d.data || []).map(function(m) { return m.id; }).filter(Boolean);
+        if (!ids.length) throw new Error('Aucun modèle renvoyé.');
+        const previous = modelSelect.value;
+        modelSelect.innerHTML = '';
+        ids.forEach(function(id) {
+            const o = document.createElement('option');
+            o.value = id; o.textContent = id;
+            modelSelect.appendChild(o);
+        });
+        let savedModel = '';
+        try { savedModel = localStorage.getItem('model_' + getProvider()) || ''; } catch (e) {}
+        if (savedModel && ids.indexOf(savedModel) !== -1) {
+            modelSelect.value = savedModel;
+        } else if (ids.indexOf(previous) !== -1) {
+            modelSelect.value = previous;
+        } else if (ids.indexOf(getProviderConfig().freeModel) !== -1) {
+            modelSelect.value = getProviderConfig().freeModel;
+        }
+        statusDiv.innerHTML = '<div class="status success">✅ ' + ids.length + ' modèles disponibles : ' + ids.join(', ') + '</div>';
+    } catch (err) {
+        statusDiv.innerHTML = '<div class="status error">❌ ' + err.message + '</div>';
+    }
+});
+
+totalSegmentsInput.addEventListener('change', function() {
+    totalSegments = getTotalSegments();
+    if (generatedSegments >= totalSegments) {
+        nextBtn.disabled = true;
+        generateBtn.disabled = false;
+    } else if (generatedSegments > 0) {
+        nextBtn.disabled = false;
+        generateBtn.disabled = true;
+    }
+});
+</script>
+
+</body></html>
+
+@echo off
+chcp 65001 >nul
+title Proxy CORS - Realisateur IA
+cd /d "%~dp0"
+
+where python >nul 2>nul
+if errorlevel 1 (
+    echo Python est introuvable. Installez-le depuis https://www.python.org puis relancez ce fichier.
+    pause
+    exit /b 1
+)
+
+if not exist "proxy_ollama.py" (
+    echo Le fichier proxy_ollama.py doit etre dans le meme dossier que ce fichier .bat.
+    pause
+    exit /b 1
+)
+
+echo Preparation des certificats (une seule fois)...
+python -m pip install --quiet --disable-pip-version-check truststore >nul 2>nul
+python -c "import truststore" >nul 2>nul
+if errorlevel 1 (
+    echo truststore indisponible : demarrage en mode --insecure.
+    python proxy_ollama.py --insecure
+) else (
+    python proxy_ollama.py
+)
+
+echo.
+echo Le proxy s'est arrete.
+pause
